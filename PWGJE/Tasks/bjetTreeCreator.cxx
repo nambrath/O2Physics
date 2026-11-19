@@ -278,6 +278,7 @@ struct BJetTreeCreator {
   Configurable<bool> produceTree{"produceTree", true, "produce the jet TTree"};
 
   Configurable<int> trainingDatasetRatioParam{"trainingDatasetRatioParam", 0, "Parameter for splitting training/evaluation datasets by collisionId"};
+  Configurable<bool> useEvaluationSample{"useEvaluationSample", false, "If true, keep collisionId % trainingDatasetRatioParam != 0 (evaluation sample) instead of == 0 (training sample)"};
 
   std::vector<int> eventSelectionBits;
 
@@ -821,9 +822,13 @@ struct BJetTreeCreator {
       return;
     }
 
-    // Uses only collisionId % trainingDatasetRaioParam == 0 for training dataset
-    if (trainingDatasetRatioParam != 0 && collision.collisionId() % trainingDatasetRatioParam != 0) {
-      return;
+    // Uses only collisionId % trainingDatasetRatioParam == 0 for training dataset,
+    // or the complement if useEvaluationSample is enabled.
+    if (trainingDatasetRatioParam != 0) {
+      bool isTrainingCollision = (collision.collisionId() % trainingDatasetRatioParam == 0);
+      if (isTrainingCollision == static_cast<bool>(useEvaluationSample)) {
+        return;
+      }
     }
 
     float eventWeight = collision.weight();
