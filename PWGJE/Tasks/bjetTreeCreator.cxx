@@ -91,6 +91,39 @@ DECLARE_SOA_TABLE(bjetParamsExtra, "AOD", "BJETPARAMSEXTRA",
 
 using bjetParamExtra = bjetParamsExtra::iterator;
 
+namespace truthJetInfo
+{
+DECLARE_SOA_COLUMN(MCPJetID, mcpJetID, int32_t);                   //! particle-level jet ID (what fMatchedMCPJetID points to)
+DECLARE_SOA_COLUMN(JetpT, jetpt, float);                           //! jet pT
+DECLARE_SOA_COLUMN(JetEta, jeteta, float);                         //! jet eta
+DECLARE_SOA_COLUMN(JetPhi, jetphi, float);                         //! jet phi
+DECLARE_SOA_COLUMN(JetR, jetR, int16_t);                           //! jet radius
+DECLARE_SOA_COLUMN(JetFlavor, jetFl, int16_t);                     //! jet flavor (0 none, 1 c, 2 b, 3 lf)
+DECLARE_SOA_COLUMN(NTracks, nTracks, int16_t);                     //! number of charged tracks
+DECLARE_SOA_COLUMN(JetEventWeight, jetEventWeight, float);         //! jet event weight for pTHat weighting
+DECLARE_SOA_COLUMN(PtHard, ptHard, float);                         //! generated pT-hat
+DECLARE_SOA_COLUMN(MCVtxZ, mcVtxZ, float);                         //! true vertex z
+DECLARE_SOA_COLUMN(HasSelectedReco, hasSelectedReco, bool);        //! has a reconstructed collision passing event selection
+DECLARE_SOA_COLUMN(RecoOutlier, recoOutlier, bool);                //! a reconstructed collision of this event is flagged as outlier
+} // namespace truthJetInfo
+
+DECLARE_SOA_TABLE(bjetTruthJets, "AOD", "BJETTRUTHJET",
+                  o2::soa::Index<>,
+                  truthJetInfo::MCPJetID,
+                  truthJetInfo::JetpT,
+                  truthJetInfo::JetEta,
+                  truthJetInfo::JetPhi,
+                  truthJetInfo::JetR,
+                  truthJetInfo::JetFlavor,
+                  truthJetInfo::NTracks,
+                  truthJetInfo::JetEventWeight,
+                  truthJetInfo::PtHard,
+                  truthJetInfo::MCVtxZ,
+                  truthJetInfo::HasSelectedReco,
+                  truthJetInfo::RecoOutlier);
+
+using bjetTruthJet = bjetTruthJets::iterator;
+
 namespace trackInfo
 {
 DECLARE_SOA_INDEX_COLUMN(bjetParam, jetindex);                         //! The jet index
@@ -115,8 +148,10 @@ DECLARE_SOA_COLUMN(TrackTPCNCls, tracktpcncls, float);                 //! The t
 DECLARE_SOA_COLUMN(TrackTPCNCrossedRows, tracktpcncrossedrows, float); //! The track TPC NCrossedRows
 // DECLARE_SOA_COLUMN(TrackTPCNSigmaPi, tracktpcnsigmapi, float);                 //! The track TPC nSigma Pi
 // DECLARE_SOA_COLUMN(TrackTOFNSigmaPi, tracktofnsigmapi, float);                 //! The track TOF nSigma Pi
-DECLARE_SOA_COLUMN(TrackOrigin, trk_origin, int);      //! The track origin label for GNN track origin predictions
-DECLARE_SOA_COLUMN(TrackVtxIndex, trk_vtx_index, int); //! The track vertex index for GNN vertex predictions
+DECLARE_SOA_COLUMN(TrackOrigin, trk_origin, int);                      //! The track origin label for GNN track origin predictions
+DECLARE_SOA_COLUMN(TrackVtxIndex, trk_vtx_index, int);                 //! The track vertex index for GNN vertex predictions
+DECLARE_SOA_COLUMN(IsGlobalTrack, isGlobalTrack, bool);                //! passes the global-track selection
+DECLARE_SOA_COLUMN(MCParticleID, mcParticleID, int32_t);               //! ID of the MC particle that made this track, -1 if none
 // DECLARE_SOA_COLUMN(DCATrackJet, dcatrackjet, float);                              //! The distance between track and jet, unfortunately it cannot be calculated in O2
 } // namespace trackInfo
 
@@ -143,7 +178,9 @@ DECLARE_SOA_TABLE(bjetTracksParamsExtra, "AOD", "BJETTRACKSEXTRA",
                   trackInfo::TrackPhi,
                   trackInfo::TrackCharge,
                   trackInfo::TrackOrigin,
-                  trackInfo::TrackVtxIndex);
+                  trackInfo::TrackVtxIndex,
+                  trackInfo::IsGlobalTrack,
+                  trackInfo::MCParticleID);
 
 using bjetTracksParamExtra = bjetTracksParamsExtra::iterator;
 
@@ -160,6 +197,24 @@ DECLARE_SOA_TABLE(bjetTracksParamsExtrb, "AOD", "BJETTRACKSEXTRB",
                   trackInfo::TrackVtxIndex);
 
 using bjetTracksParamExtrb = bjetTracksParamsExtrb::iterator;
+
+namespace truthConstInfo
+{
+DECLARE_SOA_INDEX_COLUMN(bjetTruthJet, truthjetindex);   //! row of the truth jet this particle belongs to
+DECLARE_SOA_COLUMN(MCParticleID, mcParticleID, int32_t); //! particle ID (compare with detector tracks' MC particle ID)
+DECLARE_SOA_COLUMN(TrackpT, trackpt, float);             //! particle pT
+DECLARE_SOA_COLUMN(TrackEta, tracketa, float);           //! particle eta
+DECLARE_SOA_COLUMN(TrackPhi, trackphi, float);           //! particle phi
+DECLARE_SOA_COLUMN(PDGCode, pdgCode, int32_t);           //! particle PDG code
+} // namespace truthConstInfo
+
+DECLARE_SOA_TABLE(bjetTruthConstits, "AOD", "BJETTRUTHCONST",
+                  truthConstInfo::bjetTruthJetId,
+                  truthConstInfo::MCParticleID,
+                  truthConstInfo::TrackpT,
+                  truthConstInfo::TrackEta,
+                  truthConstInfo::TrackPhi,
+                  truthConstInfo::PDGCode);
 
 // // PID information
 // DECLARE_SOA_TABLE(bjetTracksParamsExtrc, "AOD", "BJETTRACKSEXTRC",
@@ -287,6 +342,7 @@ struct BJetTreeCreator {
   std::vector<double> jetRadiiValues;
   std::vector<double> jetPtBinsReduction;
   std::vector<double> jetReductionFactorsPt;
+  int globalTrackSelection = -1;
 
   void init(InitContext const&)
   {
@@ -297,11 +353,13 @@ struct BJetTreeCreator {
     // Seed the random number generator using current time
     std::srand(static_cast<unsigned int>(std::time(nullptr)));
 
+    
     jetRadiiValues = jetRadii;
     jetPtBinsReduction = jetPtBins;
     jetReductionFactorsPt = jetReductionFactors;
-
+    
     eventSelectionBits = jetderiveddatautilities::initialiseEventSelectionBits(eventSelections);
+    globalTrackSelection = jetderiveddatautilities::initialiseTrackSelection("globalTracks");
 
     registry.add("h_vertexZ", "Vertex Z;#it{Z} (cm)", {HistType::kTH1F, {{40, -20.0, 20.0}}});
 
@@ -401,7 +459,7 @@ struct BJetTreeCreator {
   using FilteredCollision = soa::Filtered<soa::Join<aod::JetCollisions, aod::JCollisionPIs>>;
   using JetTrackswID = soa::Filtered<soa::Join<aod::JetTracks, aod::JTrackExtras, aod::JTrackPIs>>;
   using JetTracksMCDwID = soa::Filtered<soa::Join<aod::JetTracksMCD, aod::JTrackExtras, aod::JTrackPIs>>;
-  using JetTracksGNN = soa::Filtered<soa::Join<aod::JetTracks, aod::JTrackExtras>>;
+  using JetTracksGNN = soa::Filtered<soa::Join<aod::JetTracks, aod::JTrackExtras, aod::JMcTrackLbs>>;
   using DataJets = soa::Filtered<soa::Join<aod::ChargedJets, aod::ChargedJetConstituents, aod::DataSecondaryVertex3ProngIndices>>;
 
   using OriginalTracks = soa::Join<aod::Tracks, aod::TracksCov, aod::TrackSelection, aod::TracksDCA, aod::TracksDCACov, aod::TracksExtra>;
@@ -625,7 +683,9 @@ struct BJetTreeCreator {
           }
         } else {
           if (produceTree) {
-            bjetTracksExtraTable(/*bjetParamsTable.lastIndex() + 1, */ constituent.phi(), constituent.sign(), trkOrigin, trkVtxIndex); //+
+            bool isGlobal = jetderiveddatautilities::selectTrack(constituent, globalTrackSelection);
+            int32_t mcParticleID = constituent.has_mcParticle() ? constituent.mcParticleId() : -1;
+            bjetTracksExtraTable(/*bjetParamsTable.lastIndex() + 1, */ constituent.phi(), constituent.sign(), trkOrigin, trkVtxIndex, isGlobal, mcParticleID); //+ 
           }
         }
       }
