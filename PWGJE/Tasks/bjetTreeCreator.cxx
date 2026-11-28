@@ -105,6 +105,7 @@ DECLARE_SOA_COLUMN(PtHard, ptHard, float);                         //! generated
 DECLARE_SOA_COLUMN(MCVtxZ, mcVtxZ, float);                         //! true vertex z
 DECLARE_SOA_COLUMN(HasSelectedReco, hasSelectedReco, bool);        //! has a reconstructed collision passing event selection
 DECLARE_SOA_COLUMN(RecoOutlier, recoOutlier, bool);                //! a reconstructed collision of this event is flagged as outlier
+DECLARE_SOA_COLUMN(InTrainingSample, inTrainingSample, bool);      //! event is in the selected training sample 
 } // namespace truthJetInfo
 
 DECLARE_SOA_TABLE(bjetTruthJets, "AOD", "BJETTRUTHJET",
@@ -120,7 +121,8 @@ DECLARE_SOA_TABLE(bjetTruthJets, "AOD", "BJETTRUTHJET",
                   truthJetInfo::PtHard,
                   truthJetInfo::MCVtxZ,
                   truthJetInfo::HasSelectedReco,
-                  truthJetInfo::RecoOutlier);
+                  truthJetInfo::RecoOutlier,
+                  truthJetInfo::InTrainingSample);
 
 using bjetTruthJet = bjetTruthJets::iterator;
 
@@ -198,7 +200,7 @@ DECLARE_SOA_TABLE(bjetTracksParamsExtrb, "AOD", "BJETTRACKSEXTRB",
 
 using bjetTracksParamExtrb = bjetTracksParamsExtrb::iterator;
 
-namespace truthConstInfo
+namespace truthTracksInfo
 {
 DECLARE_SOA_INDEX_COLUMN(bjetTruthJet, truthjetindex);   //! row of the truth jet this particle belongs to
 DECLARE_SOA_COLUMN(MCParticleID, mcParticleID, int32_t); //! particle ID (compare with detector tracks' MC particle ID)
@@ -206,15 +208,15 @@ DECLARE_SOA_COLUMN(TrackpT, trackpt, float);             //! particle pT
 DECLARE_SOA_COLUMN(TrackEta, tracketa, float);           //! particle eta
 DECLARE_SOA_COLUMN(TrackPhi, trackphi, float);           //! particle phi
 DECLARE_SOA_COLUMN(PDGCode, pdgCode, int32_t);           //! particle PDG code
-} // namespace truthConstInfo
+} // namespace truthTracksInfo
 
-DECLARE_SOA_TABLE(bjetTruthConstits, "AOD", "BJETTRUTHCONST",
-                  truthConstInfo::bjetTruthJetId,
-                  truthConstInfo::MCParticleID,
-                  truthConstInfo::TrackpT,
-                  truthConstInfo::TrackEta,
-                  truthConstInfo::TrackPhi,
-                  truthConstInfo::PDGCode);
+DECLARE_SOA_TABLE(bjetTruthTracks, "AOD", "BJETTRUTHTRACKS",
+                  truthTracksInfo::bjetTruthJetId,
+                  truthTracksInfo::MCParticleID,
+                  truthTracksInfo::TrackpT,
+                  truthTracksInfo::TrackEta,
+                  truthTracksInfo::TrackPhi,
+                  truthTracksInfo::PDGCode);
 
 // // PID information
 // DECLARE_SOA_TABLE(bjetTracksParamsExtrc, "AOD", "BJETTRACKSEXTRC",
@@ -284,6 +286,8 @@ struct BJetTreeCreator {
   Produces<aod::bjetTracksParams> bjetTracksParamsTable;
   Produces<aod::bjetTracksParamsExtra> bjetTracksExtraTable;
   Produces<aod::bjetTracksParamsExtrb> bjetTracksExtrbTable;
+  Produces<aod::bjetTruthJets> bjetTruthJetsTable;
+  Produces<aod::bjetTruthTracks> bjetTruthTracksTable;
   Produces<aod::bjetSVParams> bjetSVParamsTable;
   Produces<aod::bjetConstituents> bjetConstituentsTable;
 
@@ -1004,6 +1008,82 @@ struct BJetTreeCreator {
     }
   }
   PROCESS_SWITCH(BJetTreeCreator, processMCTruthJets, "truth jet information", false);
+
+  
+  using FilteredCollisionMCPOutlier = soa::Filtered<soa::Join<aod::JetMcCollisions, aod::JMcCollisionOutliers>>;
+  using RecoCollisionsPerMCP = soa::SmallGroups<soa::Join<aod::JetCollisions, aod::JCollisionPIs, aod::JMcCollisionLbs, aod::JCollisionOutliers>>;
+  using MCPJetTableTruth = soa::Filtered<soa::Join<aod::ChargedMCParticleLevelJets, aod::ChargedMCParticleLevelJetConstituents, aod::ChargedMCParticleLevelJetFlavourDef>>;
+
+  void processMCTruthJetsForEEC(FilteredCollisionMCPOutlier::iterator const& mcCollision, RecoCollisionsPerMCP const& recoCollisions, MCPJetTableTruth const& MCPjets, aod::JetParticles const&)
+  {
+    // skip MB gap events and truth-level outliers
+    if (mcCollision.getSubGeneratorId() == jetderiveddatautilities::JCollisionSubGeneratorId::mbGap) {
+      return;
+    }
+    if (mcCollision.isOutlier()) {
+      return;
+    }
+
+    // look at reco events corresponding to this truth event
+    bool hasSelectedReco = false;
+    bool recoOutlier = false;
+    int64_t splitId = mcCollision.globalIndex(); // used for truth/eval split if no reco event
+    for (auto const& recoCollision : recoCollisions) {
+      if (recoCollision.isOutlier()) {
+        recoOutlier = true;
+      }
+      if (!hasSelectedReco && isAcceptedCollision<false>(recoCollision)) {
+        hasSelectedReco = true;
+        splitId = recoCollision.collisionId(); // same ID as det-level
+      }
+    }
+
+    // label if in training sample, same rule as the det-level
+    bool inTrainingSample = false;
+    if (trainingDatasetRatioParam != 0) {
+      inTrainingSample = (splitId % trainingDatasetRatioParam == 0);
+    }
+
+    float eventWeight = mcCollision.weight();
+    float pTHat = 10. / (std::pow(eventWeight, 1.0 / pTHatExponent));
+
+    for (auto const& mcpjet : MCPjets) {
+      bool jetIncluded = false;
+      for (auto const& jetR : jetRadiiValues) {
+        if (mcpjet.r() == static_cast<int>(jetR * 100)) {
+          jetIncluded = true;
+          break;
+        }
+      }
+      if (!jetIncluded) {
+        continue;
+      }
+      if (mcpjet.pt() > pTHatMaxMCP * pTHat) {
+        continue;
+      }
+
+      int16_t jetFlavor = mcpjet.origin(); // using jet-hf-definition
+
+      if (jetFlavor == JetTaggingSpecies::beauty) {
+        registry.fill(HIST("h_jetpT_particle_bjet"), mcpjet.pt(), eventWeight);
+      } else if (jetFlavor == JetTaggingSpecies::charm) {
+        registry.fill(HIST("h_jetpT_particle_cjet"), mcpjet.pt(), eventWeight);
+      } else {
+        registry.fill(HIST("h_jetpT_particle_lfjet"), mcpjet.pt(), eventWeight);
+      }
+
+      if (produceTree) {
+        bjetTruthJetsTable(mcpjet.globalIndex(), mcpjet.pt(), mcpjet.eta(), mcpjet.phi(), mcpjet.r(), jetFlavor,
+                           mcpjet.tracksIds().size(), eventWeight, mcCollision.ptHard(), mcCollision.posZ(),
+                           hasSelectedReco, recoOutlier, inTrainingSample);
+        for (auto const& particle : mcpjet.template tracks_as<aod::JetParticles>()) {
+          bjetTruthTracksTable(bjetTruthJetsTable.lastIndex(), particle.globalIndex(), particle.pt(), particle.eta(),
+                               particle.phi(), particle.pdgCode());
+        }
+      }
+    }
+  }
+  PROCESS_SWITCH(BJetTreeCreator, processMCTruthJetsForEEC, "truth jet/track information for EEC", false);
 };
 
 WorkflowSpec defineDataProcessing(ConfigContext const& cfgc)
